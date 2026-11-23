@@ -39,6 +39,7 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+backend.hcl
 
 # Claves y credenciales
 *.pem

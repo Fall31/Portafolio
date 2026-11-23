@@ -1,5 +1,5 @@
 - name: Configurar VM del portafolio
-  hosts: portafolio
+  hosts: all
   become: true
   vars:
     dockerhub_username: "TU_USUARIO_DOCKERHUB"

@@ -1,0 +1,145 @@
+name: Deploy (Docker + Terraform + Ansible)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false   # nunca canceles un terraform apply a medias
+
+jobs:
+  # ---------------------------------------------------------------
+  docker:
+    name: Docker build + push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/portafolio:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/portafolio:${{ github.sha }}
+          build-args: |
+            VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
+            VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------
+  terraform:
+    name: Terraform apply
+    runs-on: ubuntu-latest
+    outputs:
+      vm_ip: ${{ steps.ip.outputs.vm_ip }}
+    env:
+      # Credenciales del backend S3 de OCI
+      AWS_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_KEY }}
+      # Variables de Terraform
+      TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+      TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+      TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+      TF_VAR_region: ${{ secrets.OCI_REGION }}
+      TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+      TF_VAR_private_key_path: ${{ github.workspace }}/oci_api_key.pem
+      TF_VAR_ssh_public_key_path: ${{ github.workspace }}/ssh_key.pub
+      TF_VAR_shape: ${{ vars.OCI_SHAPE || 'VM.Standard.E2.1.Micro' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Escribir claves en archivos
+        run: |
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > oci_api_key.pem
+          chmod 600 oci_api_key.pem
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ssh_key.pub
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false   # permite leer `terraform output -raw`
+
+      - name: Configuración del backend
+        working-directory: terraform
+        run: |
+          cat > backend.hcl <<EOF
+          bucket    = "${{ secrets.TF_STATE_BUCKET }}"
+          endpoints = { s3 = "https://${{ secrets.OCI_NAMESPACE }}.compat.objectstorage.${{ secrets.OCI_REGION }}.oraclecloud.com" }
+          EOF
+
+      - name: terraform init
+        working-directory: terraform
+        run: terraform init -backend-config=backend.hcl -input=false
+
+      - name: terraform validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: terraform plan
+        working-directory: terraform
+        run: terraform plan -input=false -out=tfplan
+
+      - name: terraform apply
+        working-directory: terraform
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Leer IP pública
+        id: ip
+        working-directory: terraform
+        run: echo "vm_ip=$(terraform output -raw public_ip)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------
+  ansible:
+    name: Ansible (configurar VM y desplegar)
+    needs: [docker, terraform]
+    runs-on: ubuntu-latest
+    env:
+      VM_IP: ${{ needs.terraform.outputs.vm_ip }}
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Ansible y la colección de Docker
+        run: |
+          pip install ansible
+          ansible-galaxy collection install community.docker
+
+      - name: Preparar clave SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Esperar a que la VM acepte SSH
+        run: |
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+                 -i ~/.ssh/id_ed25519 ubuntu@"$VM_IP" 'echo ok' 2>/dev/null; then
+              exit 0
+            fi
+            echo "Intento $i/30: la VM aún no responde..."
+            sleep 10
+          done
+          echo "La VM no respondió por SSH"; exit 1
+
+      - name: Ejecutar playbook
+        working-directory: ansible
+        run: |
+          ansible-playbook playbook.yml \
+            -i "$VM_IP," \
+            -u ubuntu \
+            --private-key ~/.ssh/id_ed25519 \
+            -e dockerhub_username=${{ secrets.DOCKERHUB_USERNAME }}
