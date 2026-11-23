@@ -17,5 +17,9 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
+    files: ['e2e/**/*.js', 'playwright.config.js', 'vite.config.js'],
+    languageOptions: {
+      globals: globals.node,
+    },
   },
 ])
