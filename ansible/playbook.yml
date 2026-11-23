@@ -1,0 +1,127 @@
+- name: Configurar VM del portafolio
+  hosts: portafolio
+  become: true
+  vars:
+    dockerhub_username: "TU_USUARIO_DOCKERHUB"
+    app_dir: /opt/portafolio
+
+  tasks:
+    # ---------- Paquetes base ----------
+    - name: Instalar paquetes base
+      ansible.builtin.apt:
+        name:
+          - git
+          - curl
+          - ca-certificates
+          - gnupg
+          - iptables
+          - iptables-persistent
+        state: present
+        update_cache: true
+
+    # ---------- Docker (repositorio oficial) ----------
+    - name: Crear carpeta de llaves
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Descargar llave GPG de Docker
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Agregar repositorio de Docker
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu noble stable
+        filename: docker
+        state: present
+
+    - name: Instalar Docker y el plugin de Compose
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Habilitar Docker al arrancar
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Agregar usuario ubuntu al grupo docker
+      ansible.builtin.user:
+        name: ubuntu
+        groups: docker
+        append: true
+
+    # ---------- Firewall con iptables ----------
+    # Las reglas se insertan al inicio de INPUT para quedar antes del REJECT
+    # que trae la imagen de Ubuntu en OCI.
+    - name: Permitir SSH (22)
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "22"
+        jump: ACCEPT
+        action: insert
+        comment: Permitir SSH
+
+    - name: Permitir HTTP (80)
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "80"
+        jump: ACCEPT
+        action: insert
+        comment: Permitir HTTP
+
+    - name: Permitir HTTPS (443)
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: "443"
+        jump: ACCEPT
+        action: insert
+        comment: Permitir HTTPS
+
+    - name: Guardar reglas para que sobrevivan al reinicio
+      ansible.builtin.command: netfilter-persistent save
+      changed_when: true
+
+    # ---------- Despliegue de la app ----------
+    - name: Crear carpeta de la app
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ubuntu
+        mode: "0755"
+
+    - name: Copiar docker-compose.yml
+      ansible.builtin.copy:
+        src: ../docker-compose.yml
+        dest: "{{ app_dir }}/docker-compose.yml"
+        owner: ubuntu
+        mode: "0644"
+
+    - name: Crear .env con el usuario de Docker Hub
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        content: |
+          DOCKERHUB_USERNAME={{ dockerhub_username }}
+        owner: ubuntu
+        mode: "0600"
+
+    - name: Descargar imagen y levantar el portafolio
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        pull: always
+        state: present
