@@ -59,4 +59,44 @@ test.describe("con usuario de prueba", () => {
     await card.getByRole("button", { name: "Eliminar" }).click();
     await expect(card).toHaveCount(0);
   });
+  test("un visitante sin sesión ve el portafolio público sin controles de edición", async ({ page, browser }) => {
+    await login(page);
+    const portfolioUrl = page.url();
+    await expect(page.getByRole("button", { name: "Editar perfil" })).toBeVisible();
+
+    // Contexto nuevo = navegador sin sesión
+    const visitorContext = await browser.newContext();
+    const visitor = await visitorContext.newPage();
+    await visitor.goto(portfolioUrl);
+
+    await expect(visitor.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(visitor.getByRole("button", { name: "Editar perfil" })).toHaveCount(0);
+    await expect(visitor.getByPlaceholder("Título")).toHaveCount(0);
+    await expect(visitor.getByRole("link", { name: "Iniciar sesión" })).toBeVisible();
+
+    await visitorContext.close();
+  });
+});
+test("la pantalla de login alterna entre iniciar sesión y crear cuenta", async ({ page }) => {
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "Iniciar sesión" })).toBeVisible();
+
+  await page.getByRole("button", { name: "No tengo cuenta" }).click();
+  await expect(page.getByRole("heading", { name: "Crear cuenta" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Registrarme" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Ya tengo cuenta" }).click();
+  await expect(page.getByRole("heading", { name: "Iniciar sesión" })).toBeVisible();
+});
+
+test("el formulario de login exige correo y contraseña antes de enviar", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Entrar" }).click();
+
+  // La validación nativa del navegador bloquea el envío
+  await expect(page).toHaveURL(/\/login$/);
+  const faltaCorreo = await page
+    .getByPlaceholder("Correo")
+    .evaluate((el) => el.validity.valueMissing);
+  expect(faltaCorreo).toBe(true);
 });

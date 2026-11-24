@@ -33,4 +33,27 @@ describe("Login (integración)", () => {
     });
     expect(await screen.findByText("Invalid login credentials")).toBeInTheDocument();
   });
+  it("permite cambiar a modo registro y crea la cuenta con signUp", async () => {
+    supabase.auth.signUp.mockResolvedValue({ error: null });
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter>
+        <Login />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("heading", { name: "Iniciar sesión" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "No tengo cuenta" }));
+    expect(screen.getByRole("heading", { name: "Crear cuenta" })).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Correo"), "nuevo@gmail.com");
+    await user.type(screen.getByPlaceholderText("Contraseña"), "secreto123");
+    await user.click(screen.getByRole("button", { name: "Registrarme" }));
+
+    expect(supabase.auth.signUp).toHaveBeenCalledWith({
+      email: "nuevo@gmail.com",
+      password: "secreto123",
+    });
+  });
 });

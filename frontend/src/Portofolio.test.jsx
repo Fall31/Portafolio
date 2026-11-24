@@ -83,4 +83,28 @@ describe("Portfolio (integración)", () => {
       })
     );
   });
+    it("muestra un aviso cuando el portafolio no existe", async () => {
+    supabase.from.mockImplementation(() => queryMock({ data: null, error: null }));
+    useAuth.mockReturnValue({ session: null });
+
+    renderPortfolio();
+
+    expect(await screen.findByText("Este portafolio no existe.")).toBeInTheDocument();
+  });
+
+  it("el dueño puede eliminar un proyecto tras confirmar", async () => {
+    const projectsQ = setupDb();
+    useAuth.mockReturnValue({ session: { user: { id: "user-1" } } });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+
+    renderPortfolio();
+
+    await screen.findByText("Mi tienda online");
+    await user.click(screen.getByRole("button", { name: "Eliminar" }));
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(projectsQ.delete).toHaveBeenCalled();
+    expect(projectsQ.eq).toHaveBeenCalledWith("id", "p1");
+  });
 });
